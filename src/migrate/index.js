@@ -52,8 +52,8 @@ export default class Migrator {
             return !this._useTransaction(migration);
           }));
 
-        if (config.trx) {
-          return this._runBatch(migrations, 'up', config.trx);
+        if (this.config.trx) {
+          return this._runBatch(migrations, 'up', this.config.trx);
         }
         if (transactionForAll) {
           return this.knex.transaction(trx => this._runBatch(migrations, 'up', trx));
@@ -70,7 +70,7 @@ export default class Migrator {
         .tap(validateMigrationList)
         .then((val) => this._getLastBatch(val))
         .then((migrations) => {
-          return this._runBatch(map(migrations, 'name'), 'down');
+          return this._runBatch(map(migrations, 'name'), 'down', this.config.trx);
         });
     })
   }
