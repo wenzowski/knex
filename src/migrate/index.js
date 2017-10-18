@@ -52,12 +52,13 @@ export default class Migrator {
             return !this._useTransaction(migration);
           }));
 
+        if (config.trx) {
+          return this._runBatch(migrations, 'up', config.trx);
+        }
         if (transactionForAll) {
           return this.knex.transaction(trx => this._runBatch(migrations, 'up', trx));
         }
-        else {
-          return this._runBatch(migrations, 'up');
-        }
+        return this._runBatch(migrations, 'up');
       })
   }
 
