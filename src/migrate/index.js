@@ -41,7 +41,7 @@ export default class Migrator {
   // Migrators to the latest configuration.
   latest(config) {
     this.config = this.setConfig(config);
-    return this._migrationData()
+    return this._migrationData(this.config.trx)
       .tap(validateMigrationList)
       .spread((all, completed) => {
         const migrations = difference(all, completed);
@@ -66,20 +66,35 @@ export default class Migrator {
   rollback(config) {
     return Promise.try(() => {
       this.config = this.setConfig(config);
-      return this._migrationData()
+      return this._migrationData(this.config.trx)
         .tap(validateMigrationList)
         .then((val) => this._getLastBatch(val))
-        .then((migrations) => {
-          return this._runBatch(map(migrations, 'name'), 'down', this.config.trx);
+        .then((_migrations) => {
+          const migrations = map(_migrations, 'name');
+
+          const transactionForAll = !this.config.disableTransactions
+            && isEmpty(filter(migrations, name => {
+              const migration = require(path.join(this._absoluteConfigDir(), name));
+              return !this._useTransaction(migration);
+            }));
+
+          if (this.config.trx) {
+            return this._runBatch(migrations, 'down', this.config.trx);
+          }
+          if (transactionForAll) {
+            return this.knex.transaction(trx => this._runBatch(migrations, 'down', trx));
+          }
+          return this._runBatch(migrations, 'down');
         });
     })
   }
 
   status(config) {
     this.config = this.setConfig(config);
+    const trx = this.config.trx || this.knex;
 
     return Promise.all([
-      this.knex(this.config.tableName).select('*'),
+      trx(this.config.tableName).select('*'),
       this._listAll()
     ])
       .spread((db, code) => db.length - code.length);
@@ -90,7 +105,7 @@ export default class Migrator {
   // If no migrations have been run yet, return "none".
   currentVersion(config) {
     this.config = this.setConfig(config);
-    return this._listCompleted(config)
+    return this._listCompleted(this.config.trx)
       .then((completed) => {
         const val = max(map(completed, value => value.split('_')[0]));
         return (isUndefined(val) ? 'none' : val);
@@ -99,9 +114,10 @@ export default class Migrator {
 
   forceFreeMigrationsLock(config) {
     this.config = this.setConfig(config);
+    const trx = this.config.trx || this.knex;
     const lockTable = this._getLockTableName();
-    return this.knex.schema.hasTable(lockTable)
-      .then(exist => exist && this._freeLock());
+    return trx.schema.hasTable(lockTable)
+      .then(exist => exist && this._freeLock(trx));
   }
 
   // Creates a new migration, with a given name.
@@ -213,7 +229,9 @@ export default class Migrator {
       // When there is a wrapping transaction, some migrations
       // could have been done while waiting for the lock:
       .then(() => trx ? this._listCompleted(trx) : [])
-      .then(completed => migrations = difference(migrations, completed))
+      .then(completed => {
+        if (direction === 'up') migrations = difference(migrations, completed)
+      })
       .then(() => Promise.all(map(migrations, bind(this._validateMigrationStructure, this))))
       .then(() => this._latestBatchNumber(trx))
       .then(batchNo => {
@@ -268,10 +286,10 @@ export default class Migrator {
 
   // Gets the migration list from the specified migration directory, as well as
   // the list of completed migrations to check what should be run.
-  _migrationData() {
+  _migrationData(trx) {
     return Promise.all([
       this._listAll(),
-      this._listCompleted()
+      this._listCompleted(trx)
     ]);
   }
 
@@ -301,8 +319,8 @@ export default class Migrator {
   // Get the last batch of migrations, by name, ordered by insert id in reverse
   // order.
   _getLastBatch() {
-    const { tableName } = this.config;
-    return this.knex(tableName)
+    const { tableName, trx = this.knex } = this.config;
+    return trx(tableName)
       .where('batch', function(qb) {
         qb.max('batch').from(tableName)
       })
